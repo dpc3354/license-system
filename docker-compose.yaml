@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: kms-postgres
+    environment:
+      POSTGRES_USER: kms
+      POSTGRES_PASSWORD: kms_password
+      POSTGRES_DB: kms
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/kms:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kms"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kms-network
+
+  # Redis（可选，用于缓存）
+  redis:
+    image: redis:7-alpine
+    container_name: kms-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - kms-network
+
+  # KMS 服务器
+  kms-server:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.kms
+    container_name: kms-server
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_PASSWORD=kms_password
+      - ROOT_KEY_PATH=/keys/root.key
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - kms_keys:/keys
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - kms-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  kms_keys:
+    driver: local
+
+networks:
+  kms-network:
+    driver: bridge

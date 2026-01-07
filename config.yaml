@@ -1,0 +1,28 @@
+# KMS 服务配置文件
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 30s
+
+database:
+  host: "localhost"
+  
+  port: 15433
+  user: "kms"
+  password: "kms_password"  # 生产环境使用环境变量 DB_PASSWORD
+  dbname: "kms"
+  sslmode: "disable"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 5m
+
+kms:
+  root_key_path: "keys/root.key"  # Root Key 文件路径，生产环境使用环境变量
+  hsm_enabled: false                # 是否启用硬件安全模块
+  hsm_config: ""
+
+logging:
+  level: "info"        # debug, info, warn, error
+  format: "json"       # json, console
+  output_path: "stdout" # stdout, stderr, or file path
