@@ -281,11 +281,18 @@ func (s *PostgreSQLKeyStore) LogOperation(ctx context.Context, op *models.KeyOpe
 		)
 	`
 
+	// 处理 IP 地址：空字符串转为 NULL
+	var ipAddress interface{}
+	if op.IPAddress != "" {
+		ipAddress = op.IPAddress
+	} else {
+		ipAddress = nil // PostgreSQL 的 INET 类型不接受空字符串，必须用 NULL
+	}
 	_, err := s.db.ExecContext(ctx, query,
 		op.KeyID,
 		op.Operation,
 		op.Requestor,
-		op.IPAddress,
+		ipAddress,
 		op.Success,
 		op.ErrorMessage,
 		op.Timestamp,

@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dpc3354/license-system/internal/common/ctxkeys"
 	"github.com/dpc3354/license-system/internal/kms/crypto"
 	"github.com/dpc3354/license-system/internal/kms/keystore"
 	"github.com/dpc3354/license-system/internal/kms/models"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 // KMS 核心服务
@@ -17,14 +19,16 @@ type KMS struct {
 	crypto  crypto.CryptoEngine
 	store   keystore.KeyStore
 	rootKey []byte // Root Key，用于加密 Master Keys
+	logger  *zap.Logger
 }
 
 // NewKMS 创建 KMS 实例
-func NewKMS(cryptoEngine crypto.CryptoEngine, store keystore.KeyStore, rootKey []byte) *KMS {
+func NewKMS(cryptoEngine crypto.CryptoEngine, store keystore.KeyStore, rootKey []byte, logger *zap.Logger) *KMS {
 	return &KMS{
 		crypto:  cryptoEngine,
 		store:   store,
 		rootKey: rootKey,
+		logger:  logger,
 	}
 }
 
@@ -476,11 +480,17 @@ func (k *KMS) logOperation(ctx context.Context, keyID, operation string, success
 		KeyID:        keyID,
 		Operation:    operation,
 		Requestor:    "system", // TODO: 从 context 中获取真实的请求者
+		IPAddress:    ctxkeys.GetClientIP(ctx),
 		Success:      success,
 		ErrorMessage: errorMsg,
 		Timestamp:    time.Now(),
 	}
 
 	// 日志记录失败不影响主流程
-	_ = k.store.LogOperation(ctx, op)
+	if err := k.store.LogOperation(ctx, op); err != nil {
+		k.logger.Error("failed to write audit log",
+			zap.String("key_id", keyID),
+			zap.String("operation", operation),
+			zap.Error(err))
+	}
 }

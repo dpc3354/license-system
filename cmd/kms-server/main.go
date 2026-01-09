@@ -75,7 +75,7 @@ func main() {
 	// 初始化 KMS 组件
 	cryptoEngine := crypto.NewStandardCryptoEngine()
 	store := keystore.NewPostgreSQLKeyStore(db)
-	kmsCore := kms.NewKMS(cryptoEngine, store, rootKey)
+	kmsCore := kms.NewKMS(cryptoEngine, store, rootKey, logger)
 
 	logger.Info("KMS 核心组件初始化完成")
 
@@ -87,6 +87,7 @@ func main() {
 	var handler http.Handler = mux
 	handler = httpapi.RecoveryMiddleware(logger)(handler)
 	handler = httpapi.LoggingMiddleware(logger)(handler)
+	handler = httpapi.ClientIPMiddleware()(handler)
 	handler = httpapi.CORSMiddleware()(handler)
 
 	// 创建 HTTP 服务器
