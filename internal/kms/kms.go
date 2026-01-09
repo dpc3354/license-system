@@ -479,7 +479,7 @@ func (k *KMS) logOperation(ctx context.Context, keyID, operation string, success
 	op := &models.KeyOperation{
 		KeyID:        keyID,
 		Operation:    operation,
-		Requestor:    "system", // TODO: 从 context 中获取真实的请求者
+		Requestor:    ctxkeys.GetUser(ctx),
 		IPAddress:    ctxkeys.GetClientIP(ctx),
 		Success:      success,
 		ErrorMessage: errorMsg,

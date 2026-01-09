@@ -13,6 +13,7 @@ const (
 	RequestID ContextKey = "request_id"
 
 	// 用户相关
+	UserKey  ContextKey = "user"
 	UserID   ContextKey = "user_id"
 	Username ContextKey = "username"
 	TenantID ContextKey = "tenant_id"
@@ -26,6 +27,13 @@ const (
 func GetClientIP(ctx context.Context) string {
 	if ip, ok := ctx.Value(ClientIP).(string); ok {
 		return ip
+	}
+	return ""
+}
+
+func GetUser(ctx context.Context) string {
+	if user, ok := ctx.Value(UserKey).(string); ok {
+		return user
 	}
 	return ""
 }

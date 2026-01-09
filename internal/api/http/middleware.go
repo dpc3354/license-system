@@ -89,25 +89,6 @@ func RateLimitMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
-// AuthMiddleware 认证中间件（简化版）
-func AuthMiddleware() func(http.Handler) http.Handler {
-	// TODO: 实现真正的认证（JWT、API Key 等）
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 跳过健康检查的认证
-			if r.URL.Path == "/health" {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// TODO: 验证认证令牌
-			// token := r.Header.Get("Authorization")
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
 // ClientIPMiddleware 提取客户端 IP 地址的中间件
 func ClientIPMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

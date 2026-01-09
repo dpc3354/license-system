@@ -83,11 +83,16 @@ func main() {
 	router := httpapi.NewRouter(kmsCore, logger)
 	mux := router.Setup()
 
+	// 创建 API Key 存储（实际环境应该从数据库加载）
+	apiKeyStore := httpapi.NewPostgresSQLAPIKeyStore(db)
+	logger.Info("API Key 存储已初始化", zap.String("type", "PostgresSQL"))
+
 	// 应用中间件
 	var handler http.Handler = mux
 	handler = httpapi.RecoveryMiddleware(logger)(handler)
 	handler = httpapi.LoggingMiddleware(logger)(handler)
 	handler = httpapi.ClientIPMiddleware()(handler)
+	handler = httpapi.APIKeyAuthMiddleware(apiKeyStore, logger)(handler) // API Key 认证
 	handler = httpapi.CORSMiddleware()(handler)
 
 	// 创建 HTTP 服务器
