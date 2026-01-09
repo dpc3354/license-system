@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -122,12 +123,12 @@ func getClientIP(r *http.Request) string {
 
 	// 3. 使用 RemoteAddr（直连）
 	// RemoteAddr 格式是 "IP:Port"，需要去掉端口
-	ip := r.RemoteAddr
-	if idx := strings.LastIndex(ip, ":"); idx != -1 {
-		ip = ip[:idx]
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
 	}
 
-	return ip
+	return host
 }
 
 // responseRecorder 响应记录器，用于记录状态码
