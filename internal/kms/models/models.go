@@ -128,6 +128,34 @@ type RotateKeyResponse struct {
 	RotatedAt       time.Time `json:"rotated_at"`
 }
 
+// GenerateDataKeyRequest 生成数据加密密钥请求（信封加密）
+type GenerateDataKeyRequest struct {
+	MasterKeyID string `json:"master_key_id"` // Master Key ID
+	KeySpec     string `json:"key_spec"`      // 密钥规格：AES_256, AES_128
+}
+
+// GenerateDataKeyResponse 生成数据加密密钥响应
+type GenerateDataKeyResponse struct {
+	MasterKeyID  string `json:"master_key_id"` // 使用的 Master Key ID
+	PlaintextDEK []byte `json:"plaintext_dek"` // 明文 DEK（立即使用后应清除）
+	EncryptedDEK []byte `json:"encrypted_dek"` // 加密的 DEK（用于存储）
+	Algorithm    string `json:"algorithm"`     // 算法
+	KeySpec      string `json:"key_spec"`      // 密钥规格
+}
+
+// DecryptDataKeyRequest 解密数据加密密钥请求
+type DecryptDataKeyRequest struct {
+	EncryptedDEK []byte `json:"encrypted_dek"`           // 加密的 DEK（可能包含 Key ID）
+	MasterKeyID  string `json:"master_key_id,omitempty"` // 可选：明确指定 Master Key ID
+}
+
+// DecryptDataKeyResponse 解密数据加密密钥响应
+type DecryptDataKeyResponse struct {
+	PlaintextDEK []byte `json:"plaintext_dek"` // 明文 DEK
+	MasterKeyID  string `json:"master_key_id"` // 使用的 Master Key ID
+	Algorithm    string `json:"algorithm"`     // 算法
+}
+
 // KeyVersion 密钥版本（支持密钥轮换）
 type KeyVersion struct {
 	ID                string               `db:"id" json:"id"`

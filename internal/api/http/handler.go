@@ -296,6 +296,85 @@ func (h *Handler) RotateKey(w http.ResponseWriter, r *http.Request) {
 	h.respondJSON(w, http.StatusOK, resp)
 }
 
+// GenerateDataKey 生成数据加密密钥（信封加密）
+func (h *Handler) GenerateDataKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req models.GenerateDataKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// 验证请求
+	if req.MasterKeyID == "" {
+		h.respondError(w, http.StatusBadRequest, "master_key_id is required")
+		return
+	}
+
+	// 默认使用 AES_256
+	if req.KeySpec == "" {
+		req.KeySpec = "AES_256"
+	}
+
+	// 生成 DEK
+	result, err := h.kms.GenerateDataKey(r.Context(), &req)
+	if err != nil {
+		h.logger.Error("generate data key failed",
+			zap.String("master_key_id", req.MasterKeyID),
+			zap.Error(err),
+		)
+		h.respondError(w, http.StatusInternalServerError, "generate data key failed: "+err.Error())
+		return
+	}
+
+	h.logger.Info("data key generated",
+		zap.String("master_key_id", req.MasterKeyID),
+		zap.String("key_spec", req.KeySpec),
+	)
+
+	h.respondJSON(w, http.StatusOK, result)
+}
+
+// DecryptDataKey 解密数据加密密钥（信封加密）
+func (h *Handler) DecryptDataKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req models.DecryptDataKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// 验证请求
+	if len(req.EncryptedDEK) == 0 {
+		h.respondError(w, http.StatusBadRequest, "encrypted_dek is required")
+		return
+	}
+
+	// 解密 DEK
+	result, err := h.kms.DecryptDataKey(r.Context(), &req)
+	if err != nil {
+		h.logger.Error("decrypt data key failed",
+			zap.Error(err),
+		)
+		h.respondError(w, http.StatusInternalServerError, "decrypt data key failed: "+err.Error())
+		return
+	}
+
+	h.logger.Info("data key decrypted",
+		zap.String("master_key_id", result.MasterKeyID),
+	)
+
+	h.respondJSON(w, http.StatusOK, result)
+}
+
 // DisableKey 禁用密钥
 func (h *Handler) DisableKey(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

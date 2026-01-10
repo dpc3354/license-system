@@ -452,6 +452,166 @@ func (k *KMS) RotateKey(ctx context.Context, keyID string) (*models.RotateKeyRes
 	}, nil
 }
 
+// GenerateDataKey 生成数据加密密钥（信封加密）
+func (k *KMS) GenerateDataKey(ctx context.Context, req *models.GenerateDataKeyRequest) (*models.GenerateDataKeyResponse, error) {
+	// 1. 获取 Master Key
+	masterKey, err := k.store.GetKey(ctx, req.MasterKeyID)
+	if err != nil {
+		k.logOperation(ctx, req.MasterKeyID, "GENERATE_DATA_KEY", false, err.Error())
+		return nil, fmt.Errorf("get master key: %w", err)
+	}
+
+	// 2. 检查密钥状态
+	if masterKey.State != models.KeyStateEnabled {
+		err := fmt.Errorf("master key not enabled: %s", masterKey.State)
+		k.logOperation(ctx, req.MasterKeyID, "GENERATE_DATA_KEY", false, err.Error())
+		return nil, err
+	}
+
+	// 3. 检查密钥用途
+	if masterKey.Usage != models.KeyUsageEncryptDecrypt {
+		err := fmt.Errorf("master key usage must be ENCRYPT_DECRYPT, got: %s", masterKey.Usage)
+		k.logOperation(ctx, req.MasterKeyID, "GENERATE_DATA_KEY", false, err.Error())
+		return nil, err
+	}
+
+	// 4. 确定 DEK 大小
+	var alg models.KeyAlgorithm
+	switch req.KeySpec {
+	case "AES_256":
+		alg = models.AlgorithmAES256GCM // 256 bits
+	case "AES_128":
+		alg = models.AlgorithmAES128GCM // 128 bits
+	default:
+		alg = models.AlgorithmAES256GCM // 默认 256 bits
+	}
+
+	// 5. 生成新的 DEK（明文）
+	plaintextDEK, err := k.crypto.GenerateSymmetricKey(alg)
+	if err != nil {
+		return nil, fmt.Errorf("generate symmetric key: %w", err)
+	}
+
+	// 6. 获取最新版本的 Master Key 材料
+	latestVersion, err := k.store.GetLatestKeyVersion(ctx, masterKey.ID)
+	if err != nil {
+		k.logOperation(ctx, req.MasterKeyID, "GENERATE_DATA_KEY", false, err.Error())
+		return nil, fmt.Errorf("get latest version: %w", err)
+	}
+
+	// 7. 解密 Master Key 材料
+	masterKeyMaterial, err := k.decryptKeyMaterial(latestVersion.EncryptedMaterial)
+	if err != nil {
+		k.logOperation(ctx, req.MasterKeyID, "GENERATE_DATA_KEY", false, err.Error())
+		return nil, fmt.Errorf("decrypt master key: %w", err)
+	}
+	defer crypto.ClearBytes(masterKeyMaterial)
+
+	// 8. 用 Master Key 加密 DEK
+	ciphertext, iv, tag, err := k.crypto.EncryptAESGCM(masterKeyMaterial, plaintextDEK, nil)
+	if err != nil {
+		crypto.ClearBytes(plaintextDEK)
+		k.logOperation(ctx, req.MasterKeyID, "GENERATE_DATA_KEY", false, err.Error())
+		return nil, fmt.Errorf("encrypt DEK: %w", err)
+	}
+
+	// 9. 组装加密的 DEK
+	// 格式：[Key ID (40 bytes)] + [IV (12 bytes)] + [Tag (16 bytes)] + [Ciphertext]
+	encryptedDEK := make([]byte, 0, 40+12+16+len(ciphertext))
+	encryptedDEK = append(encryptedDEK, []byte(req.MasterKeyID)...) // 36 bytes
+	encryptedDEK = append(encryptedDEK, iv...)                      // 12 bytes
+	encryptedDEK = append(encryptedDEK, tag...)                     // 16 bytes
+	encryptedDEK = append(encryptedDEK, ciphertext...)              // variable
+
+	k.logOperation(ctx, req.MasterKeyID, "GENERATE_DATA_KEY", true,
+		fmt.Sprintf("key_spec=%s,algorithm=%d", req.KeySpec, alg))
+
+	return &models.GenerateDataKeyResponse{
+		MasterKeyID:  req.MasterKeyID,
+		PlaintextDEK: plaintextDEK, // 客户端应该立即使用后清除
+		EncryptedDEK: encryptedDEK, // 存储在数据旁边
+		Algorithm:    string(alg),
+		KeySpec:      req.KeySpec,
+	}, nil
+}
+
+// DecryptDataKey 解密数据加密密钥（信封加密）
+func (k *KMS) DecryptDataKey(ctx context.Context, req *models.DecryptDataKeyRequest) (*models.DecryptDataKeyResponse, error) {
+	// EncryptedDEK 格式：[Key ID (36 bytes)] + [IV (12 bytes)] + [Tag (16 bytes)] + [Ciphertext]
+	minSize := 36 + 12 + 16 // Key ID + IV + Tag（至少64字节）
+	if len(req.EncryptedDEK) < minSize {
+		return nil, fmt.Errorf("invalid encrypted DEK size: got %d, need at least %d", len(req.EncryptedDEK), minSize)
+	}
+
+	// 1. 从 EncryptedDEK 中提取 Master Key ID
+	masterKeyID := string(req.EncryptedDEK[0:40])
+
+	// 2. 如果请求中指定了 Master Key ID，验证是否匹配
+	if req.MasterKeyID != "" && req.MasterKeyID != masterKeyID {
+		err := fmt.Errorf("master key ID mismatch: expected %s, got %s", req.MasterKeyID, masterKeyID)
+		k.logOperation(ctx, masterKeyID, "DECRYPT_DATA_KEY", false, err.Error())
+		return nil, err
+	}
+
+	// 3. 提取 IV、Tag 和密文
+	iv := req.EncryptedDEK[40:52]       // 12 bytes
+	tag := req.EncryptedDEK[52:68]      // 16 bytes
+	ciphertext := req.EncryptedDEK[68:] // 剩余部分
+
+	// 4. 获取 Master Key
+	masterKey, err := k.store.GetKey(ctx, masterKeyID)
+	if err != nil {
+		k.logOperation(ctx, masterKeyID, "DECRYPT_DATA_KEY", false, err.Error())
+		return nil, fmt.Errorf("get master key: %w", err)
+	}
+
+	// 5. 检查密钥状态
+	if masterKey.State == models.KeyStateDisabled || masterKey.State == models.KeyStateDeleted {
+		err := fmt.Errorf("master key not available: %s", masterKey.State)
+		k.logOperation(ctx, masterKeyID, "DECRYPT_DATA_KEY", false, err.Error())
+		return nil, err
+	}
+
+	// 6. 获取 Master Key 的密钥材料（尝试当前版本）
+	latestVersion, err := k.store.GetLatestKeyVersion(ctx, masterKey.ID)
+	if err != nil {
+		k.logOperation(ctx, masterKeyID, "DECRYPT_DATA_KEY", false, err.Error())
+		return nil, fmt.Errorf("get latest version: %w", err)
+	}
+
+	// 7. 解密 Master Key 材料
+	masterKeyMaterial, err := k.decryptKeyMaterial(latestVersion.EncryptedMaterial)
+	if err != nil {
+		k.logOperation(ctx, masterKeyID, "DECRYPT_DATA_KEY", false, err.Error())
+		return nil, fmt.Errorf("decrypt master key: %w", err)
+	}
+	defer crypto.ClearBytes(masterKeyMaterial)
+
+	// 8. 用 Master Key 解密 DEK
+	plaintextDEK, err := k.crypto.DecryptAESGCM(masterKeyMaterial, ciphertext, iv, tag, nil)
+	if err != nil {
+		// 如果当前版本解密失败，可能是用旧版本加密的
+		// 尝试所有非 DISABLED 的版本
+		k.logger.Warn("failed to decrypt with latest version, trying other versions",
+			zap.String("key_id", masterKeyID),
+			zap.Int("current_version", latestVersion.VersionNumber),
+		)
+
+		// TODO: 实现多版本尝试解密
+		// 暂时返回错误
+		k.logOperation(ctx, masterKeyID, "DECRYPT_DATA_KEY", false, err.Error())
+		return nil, fmt.Errorf("decrypt DEK: %w", err)
+	}
+
+	k.logOperation(ctx, masterKeyID, "DECRYPT_DATA_KEY", true, "")
+
+	return &models.DecryptDataKeyResponse{
+		PlaintextDEK: plaintextDEK,
+		MasterKeyID:  masterKeyID,
+		Algorithm:    "AES-GCM",
+	}, nil
+}
+
 // DisableKey 禁用密钥
 func (k *KMS) DisableKey(ctx context.Context, keyID string) error {
 	err := k.store.UpdateKeyState(ctx, keyID, models.KeyStateDisabled)

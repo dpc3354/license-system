@@ -40,6 +40,8 @@ func (r *Router) Setup() *http.ServeMux {
 	r.mux.HandleFunc("/api/v1/keys/rotate", r.handler.RotateKey)
 	r.mux.HandleFunc("/api/v1/keys/disable", r.handler.DisableKey)
 	r.mux.HandleFunc("/api/v1/keys/enable", r.handler.EnableKey)
+	r.mux.HandleFunc("/api/v1/generate-data-key", r.handler.GenerateDataKey) // 信封加密
+	r.mux.HandleFunc("/api/v1/decrypt-data-key", r.handler.DecryptDataKey)   // 信封加密：解密 DEK
 
 	return r.mux
 }
