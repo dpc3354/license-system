@@ -270,28 +270,30 @@ func (h *Handler) RotateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: 从 URL 路径中提取 key_id
-	keyID := r.URL.Query().Get("key_id")
-	if keyID == "" {
+	var req models.RotateKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.KeyID == "" {
 		h.respondError(w, http.StatusBadRequest, "key_id is required")
 		return
 	}
 
 	ctx := r.Context()
 
-	if err := h.kms.RotateKey(ctx, keyID); err != nil {
+	resp, err := h.kms.RotateKey(ctx, req.KeyID)
+	if err != nil {
 		h.logger.Error("rotate key failed",
 			zap.Error(err),
-			zap.String("key_id", keyID),
+			zap.String("key_id", req.KeyID),
 		)
 		h.respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	h.respondJSON(w, http.StatusOK, map[string]string{
-		"message": "key rotated successfully",
-		"key_id":  keyID,
-	})
+	h.respondJSON(w, http.StatusOK, resp)
 }
 
 // DisableKey 禁用密钥

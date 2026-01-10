@@ -43,6 +43,9 @@ type KeyStore interface {
 	// GetLatestKeyVersion 获取最新的密钥版本
 	GetLatestKeyVersion(ctx context.Context, masterKeyID string) (*models.KeyVersion, error)
 
+	// UpdateKeyVersionState 更新密钥版本状态
+	UpdateKeyVersionState(ctx context.Context, versionID string, newState models.KeyState) error
+
 	// LogOperation 记录密钥操作日志
 	LogOperation(ctx context.Context, op *models.KeyOperation) error
 
@@ -73,6 +76,13 @@ func (s *PostgreSQLKeyStore) SaveKey(ctx context.Context, key *models.MasterKey)
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		)
+		ON CONFLICT (id) DO UPDATE SET
+			encrypted_key_material = EXCLUDED.encrypted_key_material,
+			state = EXCLUDED.state,
+			version = EXCLUDED.version,
+			metadata = EXCLUDED.metadata,
+			rotation_schedule = EXCLUDED.rotation_schedule,
+			updated_at = EXCLUDED.updated_at
 	`
 
 	_, err := s.db.ExecContext(ctx, query,
@@ -268,6 +278,47 @@ func (s *PostgreSQLKeyStore) GetLatestKeyVersion(ctx context.Context, masterKeyI
 	}
 
 	return &version, nil
+}
+
+// UpdateKeyVersionState 更新密钥版本状态
+func (s *PostgreSQLKeyStore) UpdateKeyVersionState(ctx context.Context, versionID string, newState models.KeyState) error {
+	var query string
+	var args []interface{}
+
+	if newState == models.KeyStateDeprecated {
+		// 如果是 DEPRECATED，同时更新 deprecated_at
+		query = `
+			UPDATE key_versions
+			SET state = $1,
+			    deprecated_at = COALESCE(deprecated_at, NOW())
+			WHERE id = $2
+		`
+		args = []interface{}{newState, versionID}
+	} else {
+		// 其他状态，只更新 state
+		query = `
+			UPDATE key_versions
+			SET state = $1
+			WHERE id = $2
+		`
+		args = []interface{}{newState, versionID}
+	}
+
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("update key version state: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return ErrKeyNotFound
+	}
+
+	return nil
 }
 
 // LogOperation 记录密钥操作日志

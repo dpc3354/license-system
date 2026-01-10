@@ -27,6 +27,7 @@ const (
 	KeyStateDisabled        KeyState = "DISABLED"
 	KeyStatePendingDeletion KeyState = "PENDING_DELETION"
 	KeyStateDeleted         KeyState = "DELETED"
+	KeyStateDeprecated      KeyState = "DEPRECATED"
 )
 
 // KeyUsage 密钥用途
@@ -105,6 +106,26 @@ type MasterKey struct {
 	CreatedAt         time.Time            `db:"created_at" json:"created_at"`
 	UpdatedAt         time.Time            `db:"updated_at" json:"updated_at"`
 	DeletedAt         *time.Time           `db:"deleted_at" json:"deleted_at,omitempty"`
+}
+
+// RotationPolicy 密钥轮换策略
+type RotationPolicy struct {
+	Enabled          bool          `json:"enabled"`           // 是否启用自动轮换
+	RotationInterval time.Duration `json:"rotation_interval"` // 轮换周期（如 90 天）
+	MaxVersions      int           `json:"max_versions"`      // 保留的最大版本数
+}
+
+// RotateKeyRequest 轮换密钥请求
+type RotateKeyRequest struct {
+	KeyID string `json:"key_id"` // 要轮换的密钥 ID
+}
+
+// RotateKeyResponse 轮换密钥响应
+type RotateKeyResponse struct {
+	KeyID           string    `json:"key_id"`
+	NewVersion      int       `json:"new_version"`
+	PreviousVersion int       `json:"previous_version"`
+	RotatedAt       time.Time `json:"rotated_at"`
 }
 
 // KeyVersion 密钥版本（支持密钥轮换）

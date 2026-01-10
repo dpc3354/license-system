@@ -98,6 +98,20 @@ func (k *KMS) CreateKey(ctx context.Context, req *models.CreateKeyRequest) (*mod
 		return nil, fmt.Errorf("save key: %w", err)
 	}
 
+	// 创建秘钥版本
+	initialVersion := &models.KeyVersion{
+		ID:                uuid.New().String(),
+		MasterKeyID:       masterKey.ID,
+		VersionNumber:     1,
+		EncryptedMaterial: encryptedMaterial,
+		State:             models.KeyStateEnabled,
+		CreatedAt:         now,
+	}
+
+	if err := k.store.SaveKeyVersion(ctx, initialVersion); err != nil {
+		return nil, fmt.Errorf("save key version: %w", err)
+	}
+
 	// 记录审计日志
 	k.logOperation(ctx, masterKey.KeyID, "CREATE_KEY", true, "")
 
@@ -106,8 +120,9 @@ func (k *KMS) CreateKey(ctx context.Context, req *models.CreateKeyRequest) (*mod
 
 // Encrypt 加密数据
 func (k *KMS) Encrypt(ctx context.Context, req *models.EncryptRequest) (*models.EncryptResponse, error) {
-	// 加载密钥
+	// 加载最新密钥
 	key, err := k.store.GetKey(ctx, req.KeyID)
+	latestVersion, err := k.store.GetLatestKeyVersion(ctx, req.KeyID)
 	if err != nil {
 		k.logOperation(ctx, req.KeyID, "ENCRYPT", false, err.Error())
 		return nil, fmt.Errorf("get key: %w", err)
@@ -128,7 +143,7 @@ func (k *KMS) Encrypt(ctx context.Context, req *models.EncryptRequest) (*models.
 	}
 
 	// 解密密钥材料
-	keyMaterial, err := k.decryptKeyMaterial(key.EncryptedMaterial)
+	keyMaterial, err := k.decryptKeyMaterial(latestVersion.EncryptedMaterial)
 	if err != nil {
 		k.logOperation(ctx, req.KeyID, "ENCRYPT", false, err.Error())
 		return nil, fmt.Errorf("decrypt key material: %w", err)
@@ -336,56 +351,105 @@ func (k *KMS) Verify(ctx context.Context, req *models.VerifyRequest) (*models.Ve
 	}, nil
 }
 
-// RotateKey 密钥轮换
-func (k *KMS) RotateKey(ctx context.Context, keyID string) error {
-	// 加载当前密钥
+// RotateKey 轮换密钥（创建新版本）
+func (k *KMS) RotateKey(ctx context.Context, keyID string) (*models.RotateKeyResponse, error) {
+	// 1. 获取当前密钥
 	key, err := k.store.GetKey(ctx, keyID)
 	if err != nil {
-		return fmt.Errorf("get key: %w", err)
+		k.logOperation(ctx, keyID, "ROTATE_KEY", false, err.Error())
+		return nil, fmt.Errorf("get key: %w", err)
 	}
 
-	// 检查密钥状态
+	// 2. 检查密钥状态
 	if key.State != models.KeyStateEnabled {
-		return fmt.Errorf("cannot rotate key in state: %s", key.State)
+		err := fmt.Errorf("cannot rotate key in state: %s", key.State)
+		k.logOperation(ctx, keyID, "ROTATE_KEY", false, err.Error())
+		return nil, err
 	}
 
-	// 生成新的密钥材料
-	var newKeyMaterial []byte
-	switch key.Usage {
-	case models.KeyUsageEncryptDecrypt:
-		newKeyMaterial, err = k.crypto.GenerateSymmetricKey(key.Algorithm)
-	case models.KeyUsageSignVerify:
-		newKeyMaterial, _, err = k.crypto.GenerateKeyPair(key.Algorithm)
-	}
-
+	// 3. 获取当前版本
+	currentVersion, err := k.store.GetLatestKeyVersion(ctx, key.ID)
 	if err != nil {
-		return fmt.Errorf("generate new key material: %w", err)
+		k.logOperation(ctx, keyID, "ROTATE_KEY", false, err.Error())
+		return nil, fmt.Errorf("get current version: %w", err)
 	}
-	defer crypto.ClearBytes(newKeyMaterial)
 
-	// 加密新密钥材料
-	encryptedMaterial, err := k.encryptKeyMaterial(newKeyMaterial)
+	// 4. 生成新的密钥材料
+	var keyMaterial []byte
+	switch key.Algorithm {
+	case models.AlgorithmAES256GCM:
+		keyMaterial, _ = k.crypto.GenerateSymmetricKey(models.AlgorithmAES256GCM) // 256-bit
+	case models.AlgorithmRSA2048:
+		keyMaterial, _, err = k.crypto.GenerateKeyPair(models.AlgorithmRSA2048)
+		if err != nil {
+			k.logOperation(ctx, keyID, "ROTATE_KEY", false, err.Error())
+			return nil, fmt.Errorf("generate RSA key: %w", err)
+		}
+	case models.AlgorithmRSA4096:
+		keyMaterial, _, err = k.crypto.GenerateKeyPair(models.AlgorithmRSA4096)
+		if err != nil {
+			k.logOperation(ctx, keyID, "ROTATE_KEY", false, err.Error())
+			return nil, fmt.Errorf("generate RSA key: %w", err)
+		}
+	default:
+		err := fmt.Errorf("unsupported algorithm: %s", key.Algorithm)
+		k.logOperation(ctx, keyID, "ROTATE_KEY", false, err.Error())
+		return nil, err
+	}
+
+	// 5. 加密新密钥材料
+	encryptedMaterial, err := k.encryptKeyMaterial(keyMaterial)
 	if err != nil {
-		return fmt.Errorf("encrypt new key material: %w", err)
+		k.logOperation(ctx, keyID, "ROTATE_KEY", false, err.Error())
+		return nil, fmt.Errorf("encrypt key material: %w", err)
 	}
 
-	// 保存新版本
+	// 6. 创建新版本
+	newVersionNumber := currentVersion.VersionNumber + 1
 	newVersion := &models.KeyVersion{
 		ID:                uuid.New().String(),
 		MasterKeyID:       key.ID,
-		VersionNumber:     key.Version + 1,
+		VersionNumber:     newVersionNumber,
 		EncryptedMaterial: encryptedMaterial,
 		State:             models.KeyStateEnabled,
 		CreatedAt:         time.Now(),
 	}
 
-	if err := k.store.SaveKeyVersion(ctx, newVersion); err != nil {
-		return fmt.Errorf("save key version: %w", err)
+	err = k.store.SaveKeyVersion(ctx, newVersion)
+	if err != nil {
+		k.logOperation(ctx, keyID, "ROTATE_KEY", false, err.Error())
+		return nil, fmt.Errorf("save new version: %w", err)
 	}
 
-	k.logOperation(ctx, keyID, "ROTATE_KEY", true, "")
+	// 7. 将旧版本标记为弃用
+	if err := k.store.UpdateKeyVersionState(ctx, currentVersion.ID, models.KeyStateDeprecated); err != nil {
+		// 记录警告但不失败（新版本已创建）
+		k.logger.Warn("failed to deprecate old version",
+			zap.String("key_id", keyID),
+			zap.Int("old_version", currentVersion.VersionNumber),
+			zap.Error(err),
+		)
+	}
 
-	return nil
+	// 8. 更新主密钥的版本号
+	key.Version = newVersionNumber
+	key.EncryptedMaterial = encryptedMaterial
+	key.UpdatedAt = time.Now()
+	if err := k.store.SaveKey(ctx, key); err != nil {
+		k.logger.Error("failed to update master key version",
+			zap.String("key_id", keyID),
+			zap.Error(err),
+		)
+	}
+
+	k.logOperation(ctx, keyID, "ROTATE_KEY", true, fmt.Sprintf("new_version=%d", newVersionNumber))
+
+	return &models.RotateKeyResponse{
+		KeyID:           keyID,
+		NewVersion:      newVersionNumber,
+		PreviousVersion: currentVersion.VersionNumber,
+		RotatedAt:       time.Now(),
+	}, nil
 }
 
 // DisableKey 禁用密钥
